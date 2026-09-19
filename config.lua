@@ -1,3 +1,5 @@
+local BASE_MAX_LEVEL = 100
+
 Config = {}
 
 --- Level every skill starts at when a player has no stored row yet.
@@ -10,6 +12,13 @@ Config.AllowDeLevel = true
 --- Show a qb-core notification to the player when a skill levels up.
 Config.NotifyOnLevelUp = true
 
+--- The default XP curve. Declared before Config.Skills because the table below
+--- reads it by value -- a `function baseXpPerLevel` further down the file would
+--- still be nil at the point the table is built.
+local function baseXpPerLevel(level)
+    return 100 + ((level - 1) * 75)
+end
+
 --- Skill definitions.
 ---
 --- maxLevel   : level cap. A skill at the cap stops accumulating XP.
@@ -17,29 +26,20 @@ Config.NotifyOnLevelUp = true
 ---              number (same for every level) or a function(level) -> number
 ---              for a curve.
 Config.Skills = {
-    mining = {
-        label = 'Mining',
-        maxLevel = 50,
-        -- Flat curve: every level costs the same.
-        xpPerLevel = 250,
+    cooking = {
+        label = 'Cooking',
+        maxLevel = BASE_MAX_LEVEL,
+        xpPerLevel = baseXpPerLevel,
     },
-
-    fishing = {
-        label = 'Fishing',
-        maxLevel = 30,
-        -- Linear curve: 100, 175, 250, ...
-        xpPerLevel = function(level)
-            return 100 + ((level - 1) * 75)
-        end,
+    crafting = {
+        label = 'Crafting',
+        maxLevel = BASE_MAX_LEVEL,
+        xpPerLevel = baseXpPerLevel,
     },
-
-    driving = {
-        label = 'Driving',
-        maxLevel = 20,
-        -- Geometric curve: each level costs 15% more than the last.
-        xpPerLevel = function(level)
-            return math.floor(200 * (1.15 ^ (level - 1)))
-        end,
+    drug_sales = {
+        label = 'Drug Sales',
+        maxLevel = BASE_MAX_LEVEL,
+        xpPerLevel = baseXpPerLevel,
     },
 }
 
