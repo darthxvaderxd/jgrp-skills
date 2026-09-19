@@ -2,8 +2,15 @@ local BASE_MAX_LEVEL = 100
 
 Config = {}
 
---- Level every skill starts at when a player has no stored row yet.
-Config.StartingLevel = 1
+--- Level every skill starts at. A character who has never trained a skill is
+--- created at this level with 0 XP, and a row is written for them on load --
+--- see ensureSkills() in server/main.lua -- rather than the skill only coming
+--- into existence the first time something touches it.
+---
+--- Note the default XP curve is `100 + (level - 1) * 75`, so the very first
+--- level (0 -> 1) costs 25 XP rather than 100. That is a deliberately gentle
+--- first step; change baseXpPerLevel if you would rather it were flat.
+Config.StartingLevel = 0
 
 --- When true, RemoveXP can drop a player back down through levels.
 --- When false, XP loss is clamped at 0 for the current level.

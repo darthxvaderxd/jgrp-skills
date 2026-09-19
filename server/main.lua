@@ -80,6 +80,31 @@ local function persist(citizenid, skillName, entry)
     )
 end
 
+--- Create a stored row for every configured skill this player is missing, at
+--- Config.StartingLevel with no XP.
+---
+--- Without this a skill only comes into existence the first time something
+--- mutates it, so a fresh character has no rows at all and every read falls
+--- back to an in-memory default that is never written. That also means a skill
+--- added to the config later silently has no row for anyone until they happen
+--- to earn XP in it. Called on load, so both cases resolve themselves.
+---
+--- @return boolean whether anything was created
+local function ensureSkills(citizenid, data)
+    local created = false
+
+    for skillName in pairs(Config.Skills) do
+        if not data[skillName] then
+            local entry = defaultEntry()
+            data[skillName] = entry
+            persist(citizenid, skillName, entry)
+            created = true
+        end
+    end
+
+    return created
+end
+
 --- All of a player's skills. Cached for online players, read-through for
 --- offline ones (an offline read is never cached).
 local function getSkills(citizenid)
@@ -285,14 +310,26 @@ local function ResetSkill(target, skillName)
     local citizenid, Player = resolveTarget(target)
     if not citizenid then return false end
 
+    -- A reset puts the skill back to the starting level rather than removing
+    -- the row, so the invariant that a character always has a row for every
+    -- configured skill survives a reset.
     if skillName then
         if not Config.Skills[skillName] then return false end
-        MySQL.prepare('DELETE FROM `player_skills` WHERE `citizenid` = ? AND `skill` = ?',
-            { citizenid, skillName })
-        if cache[citizenid] then cache[citizenid][skillName] = nil end
+
+        local entry = defaultEntry()
+        persist(citizenid, skillName, entry)
+        if cache[citizenid] then cache[citizenid][skillName] = entry end
     else
-        MySQL.prepare('DELETE FROM `player_skills` WHERE `citizenid` = ?', { citizenid })
-        if cache[citizenid] then cache[citizenid] = {} end
+        -- Delete first so rows for skills no longer in the config are cleared
+        -- out, then recreate the configured ones at the starting level.
+        --
+        -- Awaited deliberately: MySQL.prepare is fire-and-forget, so an
+        -- un-awaited DELETE can land after the re-inserts below and wipe them.
+        MySQL.prepare.await('DELETE FROM `player_skills` WHERE `citizenid` = ?', { citizenid })
+
+        local data = {}
+        ensureSkills(citizenid, data)
+        if cache[citizenid] then cache[citizenid] = data end
     end
 
     local src = Player and Player.PlayerData.source
@@ -312,7 +349,13 @@ local function loadPlayer(src)
     if not Player then return end
 
     local citizenid = Player.PlayerData.citizenid
-    cache[citizenid] = loadFromDb(citizenid)
+    local data = loadFromDb(citizenid)
+
+    -- Anything this character has no row for is created now, at the starting
+    -- level with no XP, rather than waiting for something to grant XP first.
+    ensureSkills(citizenid, data)
+
+    cache[citizenid] = data
     TriggerClientEvent('jgrp-skills:client:SetSkills', src, GetSkills(citizenid))
 end
 

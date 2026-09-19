@@ -34,14 +34,22 @@ Config.Skills = {
 ```
 
 `xpPerLevel` is the XP needed to go from `level` to `level + 1`. Everyone starts at
-`Config.StartingLevel` (1) with 0 XP; no database row exists until a skill is first
-touched.
+`Config.StartingLevel` (**0**) with 0 XP.
+
+A row is written for **every configured skill** when a character loads, so a new
+character exists in `player_skills` at level 0 with 0 XP rather than having no rows at
+all. A skill added to the config later gets its rows created on each player's next load.
+Nothing has to grant XP first for a skill to exist.
+
+Because the default curve is `100 + (level - 1) * 75`, the very first level (0 -> 1)
+costs **25 XP** rather than 100 -- a deliberately gentle first step. Change
+`baseXpPerLevel` if you would rather it were flat.
 
 Other options:
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `Config.StartingLevel` | `1` | Level an untrained skill reports. |
+| `Config.StartingLevel` | `0` | Level a character is created at, and what an untrained skill reports. Rows are created on load. |
 | `Config.AllowDeLevel` | `true` | Whether `RemoveXP` can drop through levels. When off, XP loss clamps at 0 in the current level. |
 | `Config.NotifyOnLevelUp` | `true` | Show a qb-core notification on level up. |
 
@@ -152,5 +160,8 @@ touching the function.
 ## Persistence
 
 Writes are write-through: every change is upserted immediately, so nothing is lost on a
-crash and there is no save loop to tune. Online players' skills are cached in memory and
-served from there; lookups by citizenid for offline players read the database directly.
+crash and there is no save loop to tune. On top of that, `ensureSkills()` creates any
+missing rows when a player loads, so a character's full skill set is always present in
+the database rather than being implied by its absence. Online players' skills are cached
+in memory and served from there; lookups by citizenid for offline players read the
+database directly.
