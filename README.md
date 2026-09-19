@@ -143,6 +143,27 @@ RegisterNetEvent('jgrp-skills:client:LevelUp', function(skillName, newLevel, lev
 end)
 ```
 
+## Checking your skills in game
+
+There is no UI yet. `/skill_debug` lists every configured skill with its level,
+XP and progress, printed to chat **and** to the F8 console so it can be copied
+out:
+
+```
+Cooking      Level 2   90 / 175 xp  (51%)
+Crafting     Level 0   12 / 25 xp  (48%)
+Drug Sales   Level 7   410 / 550 xp  (74%)
+```
+
+A skill at its cap shows `Level 100  (MAX)` instead of a fraction, since there
+is no next level to work toward.
+
+It reads the **client's local mirror**, not the server, so it is instant and
+costs no network round trip — and it shows exactly what the client believes,
+which is what you want when the question is "is my client actually in sync?".
+A skill listed as `not synced` means the mirror has not arrived yet, not that
+the skill is unknown; the server pushes every configured skill on load.
+
 ## Notifications
 
 Every notification the resource shows goes through one `Notify(message, notifyType, data)`
