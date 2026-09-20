@@ -1,5 +1,28 @@
 local QBCore = exports['qb-core']:GetCoreObject()
 
+-- ---------------------------------------------------------------------------
+-- Schema
+-- ---------------------------------------------------------------------------
+
+--- Create `player_skills` on first start if it is not there.
+---
+--- sql/jgrp_skills.sql still exists for applying it by hand, but relying on a
+--- manual import is a deployment step that is easy to forget -- and forgetting
+--- it fails in a way that reads like a permissions problem: every skill lookup
+--- errors and every gated action is refused. jgrp-garage adds its own column
+--- the same way.
+local function ensureSchema()
+    MySQL.query.await([[
+        CREATE TABLE IF NOT EXISTS `player_skills` (
+            `citizenid` VARCHAR(50) NOT NULL,
+            `skill` VARCHAR(50) NOT NULL,
+            `level` INT NOT NULL DEFAULT 0,
+            `xp` INT NOT NULL DEFAULT 0,
+            PRIMARY KEY (`citizenid`, `skill`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ]])
+end
+
 --- [citizenid] = { [skillName] = { level = number, xp = number } }
 --- Only holds entries for players currently online; offline reads/writes go
 --- straight to the database.
@@ -376,6 +399,10 @@ end)
 -- Repopulate the cache on a resource restart with players already online.
 AddEventHandler('onResourceStart', function(resourceName)
     if resourceName ~= GetCurrentResourceName() then return end
+
+    -- Before any load, or the first query hits a table that is not there yet.
+    ensureSchema()
+
     for _, Player in pairs(QBCore.Functions.GetQBPlayers()) do
         loadPlayer(Player.PlayerData.source)
     end
