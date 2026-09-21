@@ -182,10 +182,134 @@ setting a level is not an achievement.
 For a UI that wants the raw event:
 
 ```lua
-RegisterNetEvent('jgrp-skills:client:GainedXP', function(skillName, amount, entry)
-    -- entry carries the level and banked xp after the award
+RegisterNetEvent('jgrp-skills:client:GainedXP', function(skillName, amount, entry, boost)
+    -- entry carries the level and banked xp after the award.
+    -- boost is { multiplier, label } when one applied, nil otherwise --
+    -- `amount` is already boosted, so this is only the reason why.
 end)
 ```
+
+## XP boosts, and bonus weekends
+
+One multiplier, applied inside `AddXP` — which is the single funnel everything
+goes through, both the exports and the `jgrp-skills:server:AddXP` event. So a
+boost set here reaches fishing, drug sales, petty crime and anything added
+later **without one line changing in any of them**.
+
+The boosted figure is what the player is told: a double-XP weekend reads as
+`+24 Thieving xp  (2x Double XP Weekend)`, not `+12` and a quiet lie.
+
+### The bonus weekend
+
+`Config.Boost.Schedule` ships **empty**. Uncomment this and restart:
+
+```lua
+Schedule = {
+    { days = { 'fri', 'sat', 'sun' }, from = '00:00', to = '23:59',
+      multiplier = 2.0, label = 'Double XP Weekend' },
+},
+```
+
+| Field | Effect |
+| --- | --- |
+| `days` | `'sun'`…`'sat'`. Omit for every day. |
+| `from`, `to` | `'HH:MM'`, inclusive at both ends. |
+| `multiplier` | What XP is multiplied by while it is open. |
+| `skills` | Optional list of skill names. Omit for all of them. |
+| `label` | What the announcement calls it. |
+
+**A window where `from` is later than `to` wraps past midnight**, and `days`
+then means the day it *starts* on. Friday 18:00 → 02:00 is one entry that runs
+into Saturday morning, not two:
+
+```lua
+{ days = { 'fri' }, from = '18:00', to = '02:00',
+  multiplier = 2.0, label = 'Friday Night Double XP' },
+```
+
+This is the part worth getting right, so it has tests: 15 cases covering both
+edges of a plain window, both edges of a wrapped one, the day-before rule, and
+a wrapped window with no `days` at all.
+
+### Which clock
+
+`Config.Boost.UseUTC` picks between UTC and the server box's local time.
+**Decide it before you write a schedule.** txAdmin rotates its logs at midnight
+UTC, which is 18:00 on this box — the two are six hours apart, and a window
+written against the wrong one opens at the wrong time. UTC is safer if your
+players are spread out; local is friendlier if they are not.
+
+### The other knobs
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `Config.Boost.Enabled` | `true` | Off means XP is awarded exactly as before any of this existed. |
+| `Config.Boost.Multiplier` | `1.0` | The always-on rate. This is the knob for a permanent change. |
+| `Config.Boost.Skills` | `{}` | Per-skill overrides of `Multiplier`. |
+| `Config.Boost.Stack` | `'highest'` | How a window, the base rate and a manual boost combine. |
+| `Config.Boost.Announce` | `true` | Tell everyone when a window opens and closes. |
+| `Config.Boost.Command` | `true` | Register `/xpboost`. |
+| `Config.Boost.CommandPermission` | `'admin'` | The ace needed to *set* one. |
+| `Config.Boost.DefaultMinutes` | `60` | How long `/xpboost <n>` lasts with no duration given. |
+
+**`Stack` defaults to `'highest'` on purpose**: nothing compounds, so a 2x
+weekend plus a 2x admin boost is still 2x. `'multiply'` makes that 4x, which is
+how you accidentally ship 8x.
+
+A multiplier below 1.0 works and is honoured — `'highest'` seeds from the base
+rate rather than from 1.0, so a deliberate `Multiplier = 0.75` is not quietly
+floored back up to normal.
+
+### `/xpboost`
+
+```
+/xpboost                  what is running, per skill      -- anyone
+/xpboost 2                2x everything for an hour       -- admin
+/xpboost 2 120            2x everything for two hours     -- admin
+/xpboost 2 120 fishing    2x fishing only, for two hours  -- admin
+/xpboost 2 0              2x until the resource restarts  -- admin
+/xpboost off              clear it                        -- admin
+```
+
+Reading is open to everyone; setting needs `Config.Boost.CommandPermission`.
+The server console counts as admin, because it is already the server.
+
+**Leaving the duration off gives you an hour**, not forever —
+`Config.Boost.DefaultMinutes`. A boost you have to remember to turn off is one
+you will forget to turn off, so the indefinite version has to be asked for
+explicitly with a `0`.
+
+**A manual boost is in memory and dies with a restart** on top of that,
+deliberately — a forgotten 5x should not become somebody else's mystery next
+week. Scheduled windows are config and survive.
+
+The `SetBoost` export is the programmatic route and does **not** apply the
+default: `minutes` is nil there means indefinite, because a caller passing nil
+has said so on purpose rather than just not typing it.
+
+### Rounding
+
+The result is rounded half up and then floored at 1, because `AddXP` refuses
+anything below 1 and a fractional result must never silently swallow an award.
+**A multiplier of 0 is therefore not a way to switch XP off** — use
+`Config.Boost.Enabled = false`.
+
+### For a UI
+
+```lua
+-- server
+local multiplier, label = exports['jgrp-skills']:GetBoost('thieving')
+
+-- set one from another resource (multiplier, minutes, skill, label)
+exports['jgrp-skills']:SetBoost(2.0, 120, nil, 'Launch Weekend')
+
+-- client: fired to everyone when a window opens or closes
+RegisterNetEvent('jgrp-skills:client:BoostNotice', function(data)
+    -- data.open, data.label, data.multiplier, data.skills
+end)
+```
+
+`AddXP` also returns `boost` and `boostLabel` on its result table.
 
 ## Notifications
 

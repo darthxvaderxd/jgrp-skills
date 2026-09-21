@@ -147,7 +147,7 @@ end
 --- Write an entry back to the cache (when online), the database, and the
 --- owning client, then fire the level-up hooks for any levels gained.
 --- @param gained number|nil XP just earned, for the client to report
-local function commit(citizenid, Player, skillName, entry, levelsGained, gained)
+local function commit(citizenid, Player, skillName, entry, levelsGained, gained, boost)
     if cache[citizenid] then
         cache[citizenid][skillName] = entry
     end
@@ -162,7 +162,7 @@ local function commit(citizenid, Player, skillName, entry, levelsGained, gained)
         -- every source of XP reads the same and none of them has to remember
         -- to say so.
         if gained and gained > 0 then
-            TriggerClientEvent('jgrp-skills:client:GainedXP', src, skillName, gained, entry)
+            TriggerClientEvent('jgrp-skills:client:GainedXP', src, skillName, gained, entry, boost)
         end
     end
 
@@ -197,6 +197,35 @@ local function prepareMutation(target, skillName, amount)
 
     local data = getSkills(citizenid)
     return citizenid, Player, data, getEntry(data, skillName), amount
+end
+
+-- ---------------------------------------------------------------------------
+-- XP boosts
+--
+-- The scheduled windows live in the config and need no state. This is only the
+-- manual one from `/xpboost`, which is deliberately **in memory**: a boost an
+-- admin sets by hand should not outlive a restart, or a forgotten 5x becomes
+-- somebody else's mystery next week.
+-- ---------------------------------------------------------------------------
+
+--- { multiplier, skill, label, expires } or nil. `expires` is an os.time()
+--- stamp; nil means until the resource stops.
+local manualBoost
+
+local function manualActive()
+    if not manualBoost then return nil end
+
+    if manualBoost.expires and os.time() >= manualBoost.expires then
+        manualBoost = nil
+        return nil
+    end
+
+    return manualBoost
+end
+
+--- The multiplier in force for a skill right now, and what to call it.
+local function boostFor(skillName)
+    return Config.BoostFor(skillName, manualActive())
 end
 
 -- ---------------------------------------------------------------------------
@@ -262,6 +291,18 @@ local function AddXP(target, skillName, amount)
     local citizenid, Player, _, entry, value = prepareMutation(target, skillName, amount)
     if not citizenid then return nil end
 
+    -- **Applied here and nowhere else.** Every route into this resource --
+    -- both exports and the AddXP server event -- lands on this function, so a
+    -- boost set in the config reaches every resource that awards XP without
+    -- any of them knowing it exists.
+    --
+    -- After prepareMutation, so the caller's own amount is what gets validated
+    -- and a boost can never turn a refused award into an accepted one. The
+    -- boosted figure is what goes to commit(), so the player is told what was
+    -- actually banked rather than what was asked for.
+    local multiplier, boostLabel = boostFor(skillName)
+    value = Config.ApplyBoost(value, multiplier)
+
     local levelsGained = 0
     entry.xp = entry.xp + value
 
@@ -279,10 +320,16 @@ local function AddXP(target, skillName, amount)
         levelsGained = levelsGained + 1
     end
 
-    commit(citizenid, Player, skillName, entry, levelsGained, value)
+    -- Only tell the client about a boost that actually changed the number.
+    commit(citizenid, Player, skillName, entry, levelsGained, value,
+        multiplier ~= 1.0 and { multiplier = multiplier, label = boostLabel } or nil)
 
     local result = GetSkill(citizenid, skillName)
-    if result then result.levelsGained = levelsGained end
+    if result then
+        result.levelsGained = levelsGained
+        result.boost = multiplier
+        result.boostLabel = boostLabel
+    end
     return result
 end
 
@@ -422,6 +469,247 @@ end)
 
 QBCore.Functions.CreateCallback('jgrp-skills:server:GetSkills', function(source, cb)
     cb(GetSkills(source))
+end)
+
+-- ---------------------------------------------------------------------------
+-- Boost: reporting, announcements and /xpboost
+-- ---------------------------------------------------------------------------
+
+--- A multiplier as a short string: 2.00 -> "2", 1.50 -> "1.5".
+local function rateText(multiplier)
+    local text = ('%.2f'):format(multiplier):gsub('%.?0+$', '')
+    return text
+end
+
+--- What is running right now, as lines for a console or a chat box.
+local function boostReport()
+    if not (Config.Boost and Config.Boost.Enabled) then
+        return { 'XP boosts are disabled.' }
+    end
+
+    local lines = {}
+    local manual = manualActive()
+
+    -- Reported per skill, because a window or a Skills override can single one
+    -- out and a single headline figure would be a lie for the others.
+    local names = {}
+    for skillName in pairs(Config.Skills) do names[#names + 1] = skillName end
+    table.sort(names)
+
+    local width = 0
+    for i = 1, #names do
+        local label = Config.Skills[names[i]].label or names[i]
+        if #label > width then width = #label end
+    end
+
+    local pad = ('%%-%ds'):format(width)
+
+    for i = 1, #names do
+        local skillName = names[i]
+        local multiplier, label = Config.BoostFor(skillName, manual)
+        local text = ('%s   %sx'):format(
+            pad:format(Config.Skills[skillName].label or skillName), rateText(multiplier))
+
+        if label then text = ('%s  -- %s'):format(text, label) end
+
+        lines[#lines + 1] = text
+    end
+
+    if manual then
+        local left = manual.expires and math.max(0, manual.expires - os.time()) or nil
+
+        lines[#lines + 1] = left
+            and ('Manual boost: %sx for another %d min')
+                :format(rateText(manual.multiplier), math.ceil(left / 60))
+            or ('Manual boost: %sx, until the resource restarts')
+                :format(rateText(manual.multiplier))
+    end
+
+    return lines
+end
+
+exports('GetBoost', function(skillName)
+    return Config.BoostFor(skillName, manualActive())
+end)
+
+--- Set or clear the manual boost from another resource. A multiplier of 0 or
+--- less clears it.
+exports('SetBoost', function(multiplier, minutes, skillName, label)
+    multiplier = tonumber(multiplier)
+
+    if not multiplier or multiplier <= 0 then
+        manualBoost = nil
+        return true
+    end
+
+    if skillName and not Config.Skills[skillName] then return false end
+
+    manualBoost = {
+        multiplier = multiplier,
+        skill = skillName,
+        label = label or 'Admin boost',
+        expires = tonumber(minutes) and (os.time() + (tonumber(minutes) * 60)) or nil,
+    }
+
+    return true
+end)
+
+-- ---------------------------------------------------------------------------
+-- Announcements
+--
+-- Polled rather than scheduled: working out the next transition for a set of
+-- wrapping, day-filtered windows is a great deal more code than looking every
+-- half minute, and half a minute of lateness does not matter for a weekend.
+-- ---------------------------------------------------------------------------
+
+CreateThread(function()
+    if not (Config.Boost and Config.Boost.Enabled and Config.Boost.Announce) then return end
+
+    -- Seeded from the current state, so restarting during an open window does
+    -- not re-announce it to everyone already playing.
+    local announced = {}
+    for _, entry in ipairs(Config.OpenBoostWindows(nil)) do announced[entry] = true end
+
+    while true do
+        Wait(30000)
+
+        local open = {}
+        for _, entry in ipairs(Config.OpenBoostWindows(nil)) do open[entry] = true end
+
+        for entry in pairs(open) do
+            if not announced[entry] then
+                TriggerClientEvent('jgrp-skills:client:BoostNotice', -1, {
+                    open = true,
+                    label = entry.label or 'XP boost',
+                    multiplier = tonumber(entry.multiplier) or 1.0,
+                    skills = entry.skills,
+                })
+            end
+        end
+
+        for entry in pairs(announced) do
+            if not open[entry] then
+                TriggerClientEvent('jgrp-skills:client:BoostNotice', -1, {
+                    open = false,
+                    label = entry.label or 'XP boost',
+                })
+            end
+        end
+
+        announced = open
+    end
+end)
+
+-- ---------------------------------------------------------------------------
+-- /xpboost
+--
+--   /xpboost                 what is running -- anyone
+--   /xpboost 2               2x everything for an hour (Config.DefaultMinutes)
+--   /xpboost 2 120           2x everything for two hours
+--   /xpboost 2 120 fishing   2x fishing only, for two hours
+--   /xpboost 2 0             2x until the resource restarts
+--   /xpboost off             clear it
+--
+-- Reading is open to everyone; setting needs Config.Boost.CommandPermission.
+-- ---------------------------------------------------------------------------
+
+CreateThread(function()
+    if not (Config.Boost and Config.Boost.Command) then return end
+
+    RegisterCommand('xpboost', function(source, args)
+        local src = source
+
+        local function reply(message)
+            if src == 0 then
+                print(('[jgrp-skills] %s'):format(message))
+            else
+                TriggerClientEvent('QBCore:Notify', src, message, 'primary')
+            end
+        end
+
+        if not args[1] then
+            local body = table.concat(boostReport(), '\n')
+
+            if src == 0 then
+                print(('[jgrp-skills] XP boosts:\n%s'):format(body))
+            else
+                TriggerClientEvent('chat:addMessage', src, {
+                    color = { 200, 160, 255 },
+                    multiline = true,
+                    args = { 'XP Boost', body },
+                })
+            end
+
+            return
+        end
+
+        -- Setting one is an admin action. The console (src 0) is always
+        -- allowed, because it is already the server.
+        if src ~= 0
+            and not QBCore.Functions.HasPermission(src, Config.Boost.CommandPermission or 'admin') then
+            return reply('You cannot set that.')
+        end
+
+        local first = tostring(args[1]):lower()
+
+        if first == 'off' or first == 'clear' or first == 'none' then
+            manualBoost = nil
+            return reply('Manual XP boost cleared.')
+        end
+
+        local multiplier = tonumber(args[1])
+        if not multiplier or multiplier <= 0 then
+            return reply(('Usage: /xpboost <multiplier> [minutes] [skill] -- minutes '
+                .. 'defaults to %d, 0 means until restart. /xpboost off to clear.')
+                :format(tonumber(Config.Boost.DefaultMinutes) or 60))
+        end
+
+        -- No duration given means Config.Boost.DefaultMinutes -- an hour --
+        -- rather than forever. An explicit 0 is the only way to ask for a
+        -- boost that outlives the command, because the indefinite one is the
+        -- one that gets forgotten about.
+        --
+        -- Note 0 is truthy in Lua, so this cannot be collapsed into
+        -- `minutes and ...`; that is what made an explicit 0 expire instantly.
+        local minutes = tonumber(args[2])
+
+        if minutes == nil then
+            minutes = tonumber(Config.Boost.DefaultMinutes) or 60
+        end
+
+        if minutes < 0 then minutes = 0 end
+
+        local skillName = args[3]
+
+        if skillName and not Config.Skills[skillName] then
+            return reply(('There is no "%s" skill.'):format(skillName))
+        end
+
+        manualBoost = {
+            multiplier = multiplier,
+            skill = skillName,
+            label = 'Admin boost',
+            expires = minutes > 0 and (os.time() + (minutes * 60)) or nil,
+        }
+
+        reply(('XP boost set: %sx%s%s'):format(
+            rateText(multiplier),
+            skillName and (' on ' .. skillName) or '',
+            minutes > 0 and ((' for %d min'):format(minutes)) or ' until restart'))
+
+        if Config.Boost.Announce then
+            TriggerClientEvent('jgrp-skills:client:BoostNotice', -1, {
+                open = true,
+                label = 'Admin boost',
+                multiplier = multiplier,
+                skills = skillName and { skillName } or nil,
+            })
+        end
+    end, false)
+
+    TriggerClientEvent('chat:addSuggestion', -1, '/xpboost',
+        ('Current XP boosts, or set one for %d min (admin)')
+            :format(tonumber(Config.Boost.DefaultMinutes) or 60))
 end)
 
 -- ---------------------------------------------------------------------------

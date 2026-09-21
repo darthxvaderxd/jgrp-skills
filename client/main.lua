@@ -52,20 +52,36 @@ end)
 --- XP earned, from whatever earned it. Deliberately quiet about the source:
 --- the framework knows the number and the skill, and the resource that awarded
 --- it is free to say more in its own words.
-RegisterNetEvent('jgrp-skills:client:GainedXP', function(skillName, amount, entry)
+RegisterNetEvent('jgrp-skills:client:GainedXP', function(skillName, amount, entry, boost)
     if not Config.NotifyOnXP then return end
     if type(amount) ~= 'number' or amount < (Config.NotifyXPThreshold or 1) then return end
 
     local skill = Config.Skills[skillName]
     if not skill then return end
 
-    Notify(('+%d %s xp'):format(amount, skill.label or skillName), 'success', {
+    local line = ('+%d %s xp'):format(amount, skill.label or skillName)
+
+    -- `amount` is already the boosted figure, so this only names the reason.
+    -- A bonus weekend nobody notices is a bonus weekend wasted.
+    if boost and boost.multiplier then
+        -- Trailing zeros off, so 2.00 reads as 2 and 1.50 as 1.5. Kept in its
+        -- own local rather than inlined: gsub returns two values, and inlining
+        -- it into format() only works by accident of argument truncation.
+        local rate = ('%.2f'):format(boost.multiplier):gsub('%.?0+$', '')
+        local why = boost.label and (' ' .. boost.label) or ''
+
+        line = ('%s  (%sx%s)'):format(line, rate, why)
+    end
+
+    Notify(line, 'success', {
         event = 'xp',
         skill = skillName,
         label = skill.label or skillName,
         amount = amount,
         level = entry and entry.level,
         xp = entry and entry.xp,
+        boost = boost and boost.multiplier or nil,
+        boostLabel = boost and boost.label or nil,
     })
 end)
 
@@ -197,3 +213,49 @@ RegisterCommand('skill_debug', function()
     -- Also to F8, so it can be copied out of the console.
     print(('[jgrp-skills] skills for this character:\n%s'):format(body))
 end, false)
+
+-- ---------------------------------------------------------------------------
+-- Boost announcements
+--
+-- Sent to everyone when a scheduled window opens or closes, and when an admin
+-- sets one by hand. The XP notifications already name the boost on every
+-- award; this is so a weekend starting while you are stood in a field is still
+-- something you find out about.
+-- ---------------------------------------------------------------------------
+
+RegisterNetEvent('jgrp-skills:client:BoostNotice', function(data)
+    if type(data) ~= 'table' then return end
+
+    if not data.open then
+        return Notify(('%s has ended.'):format(data.label or 'The XP boost'), 'primary', {
+            event = 'boost',
+            open = false,
+            label = data.label,
+        })
+    end
+
+    local rate = ('%.2f'):format(tonumber(data.multiplier) or 1.0):gsub('%.?0+$', '')
+
+    -- A window can be limited to some skills, and saying "2x XP" when it is
+    -- only fishing would be a lie.
+    local scope = 'XP'
+
+    if type(data.skills) == 'table' and #data.skills > 0 then
+        local labels = {}
+
+        for i = 1, #data.skills do
+            local skill = Config.Skills[data.skills[i]]
+            labels[#labels + 1] = skill and (skill.label or data.skills[i]) or data.skills[i]
+        end
+
+        scope = ('%s XP'):format(table.concat(labels, ', '))
+    end
+
+    Notify(('%s is live -- %sx %s!'):format(data.label or 'XP boost', rate, scope), 'success', {
+        event = 'boost',
+        open = true,
+        label = data.label,
+        multiplier = data.multiplier,
+        skills = data.skills,
+    })
+end)
