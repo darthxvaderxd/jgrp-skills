@@ -146,7 +146,8 @@ end
 
 --- Write an entry back to the cache (when online), the database, and the
 --- owning client, then fire the level-up hooks for any levels gained.
-local function commit(citizenid, Player, skillName, entry, levelsGained)
+--- @param gained number|nil XP just earned, for the client to report
+local function commit(citizenid, Player, skillName, entry, levelsGained, gained)
     if cache[citizenid] then
         cache[citizenid][skillName] = entry
     end
@@ -156,6 +157,13 @@ local function commit(citizenid, Player, skillName, entry, levelsGained)
     local src = Player and Player.PlayerData.source
     if src then
         TriggerClientEvent('jgrp-skills:client:UpdateSkill', src, skillName, entry)
+
+        -- Reported by the framework rather than by whatever awarded it, so
+        -- every source of XP reads the same and none of them has to remember
+        -- to say so.
+        if gained and gained > 0 then
+            TriggerClientEvent('jgrp-skills:client:GainedXP', src, skillName, gained, entry)
+        end
     end
 
     if levelsGained and levelsGained > 0 then
@@ -271,7 +279,7 @@ local function AddXP(target, skillName, amount)
         levelsGained = levelsGained + 1
     end
 
-    commit(citizenid, Player, skillName, entry, levelsGained)
+    commit(citizenid, Player, skillName, entry, levelsGained, value)
 
     local result = GetSkill(citizenid, skillName)
     if result then result.levelsGained = levelsGained end

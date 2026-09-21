@@ -49,6 +49,26 @@ RegisterNetEvent('jgrp-skills:client:UpdateSkill', function(skillName, entry)
     }
 end)
 
+--- XP earned, from whatever earned it. Deliberately quiet about the source:
+--- the framework knows the number and the skill, and the resource that awarded
+--- it is free to say more in its own words.
+RegisterNetEvent('jgrp-skills:client:GainedXP', function(skillName, amount, entry)
+    if not Config.NotifyOnXP then return end
+    if type(amount) ~= 'number' or amount < (Config.NotifyXPThreshold or 1) then return end
+
+    local skill = Config.Skills[skillName]
+    if not skill then return end
+
+    Notify(('+%d %s xp'):format(amount, skill.label or skillName), 'success', {
+        event = 'xp',
+        skill = skillName,
+        label = skill.label or skillName,
+        amount = amount,
+        level = entry and entry.level,
+        xp = entry and entry.xp,
+    })
+end)
+
 RegisterNetEvent('jgrp-skills:client:LevelUp', function(skillName, level, levelsGained)
     if not Config.NotifyOnLevelUp then return end
 

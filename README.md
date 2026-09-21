@@ -164,6 +164,29 @@ which is what you want when the question is "is my client actually in sync?".
 A skill listed as `not synced` means the mirror has not arrived yet, not that
 the skill is unknown; the server pushes every configured skill on load.
 
+## Telling you when you earn
+
+Every XP award notifies the player — `+14 Thieving xp` — because the framework
+is the one place that knows about all of them. A resource that awards XP gets
+this for free and does not have to remember to say so.
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `Config.NotifyOnXP` | `true` | Notify on every gain, not just a level up. |
+| `Config.NotifyXPThreshold` | `1` | Ignore gains below this. Raise it to keep a trickle quiet. |
+
+Only **earning** notifies. `RemoveXP` and `SetSkill` stay silent: losing XP is
+usually a punishment the resource taking it has already explained, and an admin
+setting a level is not an achievement.
+
+For a UI that wants the raw event:
+
+```lua
+RegisterNetEvent('jgrp-skills:client:GainedXP', function(skillName, amount, entry)
+    -- entry carries the level and banked xp after the award
+end)
+```
+
 ## Notifications
 
 Every notification the resource shows goes through one `Notify(message, notifyType, data)`

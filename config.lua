@@ -19,6 +19,18 @@ Config.AllowDeLevel = true
 --- Show a qb-core notification to the player when a skill levels up.
 Config.NotifyOnLevelUp = true
 
+--- Show a notification every time XP is earned, not just on a level up.
+---
+--- This is the skill framework's own message, so every resource that awards
+--- XP gets it for free and they all read the same. A resource that already
+--- says what you earned in its own line will now say it twice -- that is the
+--- cost of having one honest source for it.
+Config.NotifyOnXP = true
+
+--- Do not bother for tiny amounts. 1 means notify for everything; 5 would
+--- keep the corner-by-corner trickle quiet and still report a real haul.
+Config.NotifyXPThreshold = 1
+
 --- The default XP curve. Declared before Config.Skills because the table below
 --- reads it by value -- a `function baseXpPerLevel` further down the file would
 --- still be nil at the point the table is built.
@@ -50,6 +62,11 @@ Config.Skills = {
     },
     fishing = {
         label = 'Fishing',
+        maxLevel = BASE_MAX_LEVEL,
+        xpPerLevel = baseXpPerLevel,
+    },
+    thieving = {
+        label = 'Thieving',
         maxLevel = BASE_MAX_LEVEL,
         xpPerLevel = baseXpPerLevel,
     },
