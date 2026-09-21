@@ -24,6 +24,20 @@ local function Notify(message, notifyType, data)
     QBCore.Functions.Notify(message, notifyType)
 end
 
+--- Notify, after `delay` milliseconds. 0 or nil fires straight away.
+---
+--- Used so the XP and level-up lines queue behind the result message from
+--- whatever awarded them, rather than arriving before it -- both are sent from
+--- inside the awarding resource's Complete(), which runs before it sends its
+--- own line.
+local function NotifyAfter(delay, message, notifyType, data)
+    delay = tonumber(delay) or 0
+
+    if delay <= 0 then return Notify(message, notifyType, data) end
+
+    SetTimeout(delay, function() Notify(message, notifyType, data) end)
+end
+
 local function requestSync()
     QBCore.Functions.TriggerCallback('jgrp-skills:server:GetSkills', function(data)
         skills = data or {}
@@ -73,7 +87,7 @@ RegisterNetEvent('jgrp-skills:client:GainedXP', function(skillName, amount, entr
         line = ('%s  (%sx%s)'):format(line, rate, why)
     end
 
-    Notify(line, 'success', {
+    NotifyAfter(Config.NotifyDelay and Config.NotifyDelay.xp, line, 'success', {
         event = 'xp',
         skill = skillName,
         label = skill.label or skillName,
@@ -91,7 +105,8 @@ RegisterNetEvent('jgrp-skills:client:LevelUp', function(skillName, level, levels
     local skill = Config.Skills[skillName]
     if not skill then return end
 
-    Notify(('%s level %d'):format(skill.label or skillName, level), 'success', {
+    NotifyAfter(Config.NotifyDelay and Config.NotifyDelay.levelUp,
+        ('%s level %d'):format(skill.label or skillName, level), 'success', {
         event = 'levelup',
         skill = skillName,
         label = skill.label or skillName,

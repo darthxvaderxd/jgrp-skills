@@ -174,6 +174,26 @@ this for free and does not have to remember to say so.
 | --- | --- | --- |
 | `Config.NotifyOnXP` | `true` | Notify on every gain, not just a level up. |
 | `Config.NotifyXPThreshold` | `1` | Ignore gains below this. Raise it to keep a trickle quiet. |
+| `Config.NotifyDelay.xp` | `250` | Hold the XP line back this many ms. |
+| `Config.NotifyDelay.levelUp` | `600` | Hold the level-up line back this many ms. |
+
+### Why the notifications are staggered
+
+A crime fires three messages within milliseconds: the XP gain, a level up, and
+its own result line. The first two are sent from inside the awarding resource's
+`Complete()`, which runs **before** that resource sends its result — so
+unstaggered they arrive in the wrong order, with the detail ahead of the
+headline.
+
+It used to be worse than an ordering nit. **`sofy-notifications` gave every
+notification of the same type the same DOM id** (`colorsentsuccess`) and hid
+the previous one on arrival, so of those three `success` messages only the last
+reached the screen — which is why XP gains and level ups appeared to do nothing
+at all through 2026-09-20. Fixed in that resource on 2026-09-21 (unique ids,
+nothing hidden on arrival; see the `LOCAL FIX` comment in its `scripts.js`).
+
+The stagger is no longer load-bearing, but the reading order is better for it.
+Set either delay to `0` to fire immediately.
 
 Only **earning** notifies. `RemoveXP` and `SetSkill` stay silent: losing XP is
 usually a punishment the resource taking it has already explained, and an admin

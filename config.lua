@@ -31,6 +31,27 @@ Config.NotifyOnXP = true
 --- keep the corner-by-corner trickle quiet and still report a real haul.
 Config.NotifyXPThreshold = 1
 
+--- Milliseconds to hold each notification back by, so they queue behind
+--- whatever the resource that awarded the XP is saying rather than racing it.
+---
+--- A crime fires three messages inside a few milliseconds -- the XP gain, a
+--- level up, and its own result line. **Unstaggered they arrive in the wrong
+--- order**: XP and level up are sent from inside `Complete()`, which runs
+--- *before* the caller sends its result, so the headline ("In the pocket:
+--- $126") landed last and the detail landed first.
+---
+--- This also stopped them being eaten outright. `sofy-notifications` used to
+--- give every notification of the same type the same DOM id and hide the
+--- previous one on arrival, so only the last of the three survived -- see the
+--- LOCAL FIX note in that resource's scripts.js, fixed 2026-09-21. The
+--- stagger is no longer load-bearing, but the reading order is better for it.
+---
+--- Set either to 0 to fire immediately.
+Config.NotifyDelay = {
+    xp = 250,
+    levelUp = 600,
+}
+
 -- ---------------------------------------------------------------------------
 -- XP boosts
 --
