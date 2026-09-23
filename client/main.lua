@@ -125,6 +125,8 @@ AddEventHandler('onClientResourceStart', function(resourceName)
     -- not be listening yet and the suggestion is silently dropped.
     TriggerEvent('chat:addSuggestion', '/skill_debug',
         'List your level and XP for every skill')
+    TriggerEvent('chat:addSuggestion','/skill',
+        'List your level and XP for every skill')
 end)
 
 -- ---------------------------------------------------------------------------
@@ -273,4 +275,65 @@ RegisterNetEvent('jgrp-skills:client:BoostNotice', function(data)
         multiplier = data.multiplier,
         skills = data.skills,
     })
+end)
+
+local uiOpen = false
+local function skillRows()
+    local rows = {}
+
+    for skillName, skill in pairs(Config.Skills) do
+        local entry = skills[skillName]
+
+        rows[#rows + 1] = {
+            skill = skillName,
+            label = skill.label or skillName,
+            level = entry and entry.level or Config.StartingLevel,
+            xp = entry and entry.xp or 0,
+            xpForNextLevel = entry and entry.xpForNextLevel
+                or Config.XPForLevel(skillName, Config.StartingLevel),
+            atMaxLevel = entry and entry.atMaxLevel or false,
+            maxLevel = skill.maxLevel,
+            synced = entry ~= nil,
+        }
+    end
+
+    table.sort(rows, function(a, b) return a.label < b.label end)
+    return rows
+end
+
+local function openSkillUI()
+    if uiOpen then return end
+    uiOpen = true
+
+    SetNuiFocus(true, true)
+    SendNUIMessage({ action = 'open', skills = skillRows() })
+end
+
+local function closeSkillUI()
+    if not uiOpen then return end
+    uiOpen = false
+
+    SetNuiFocus(false, false)
+    SendNUIMessage({ action = 'close' })
+end
+
+RegisterCommand('skill', function()
+    if uiOpen then closeSkillUI() else openSkillUI() end
+end, false)
+
+RegisterKeyMapping('skill', 'Open the skills menu', 'keyboard', '')
+
+RegisterNUICallback('jgrp-skills:close', function(_, cb)
+    closeSkillUI()
+    cb('ok')
+end)
+
+RegisterNetEvent('jgrp-skills:client:UpdateSkill', function()
+    if not uiOpen then return end
+    SendNUIMessage({ action = 'update', skills = skillRows() })
+end)
+
+AddEventHandler('onClientResourceStop', function(resourceName)
+    if resourceName ~= GetCurrentResourceName() then return end
+    if uiOpen then SetNuiFocus(false, false) end
 end)
