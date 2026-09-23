@@ -164,6 +164,40 @@ which is what you want when the question is "is my client actually in sync?".
 A skill listed as `not synced` means the mirror has not arrived yet, not that
 the skill is unknown; the server pushes every configured skill on load.
 
+## Setting a level by hand
+
+`/setskill` puts a character on a level outright. **Admin only**, and the whole
+command is behind `Config.SetSkill.Command` so it can be switched off without
+editing code:
+
+```
+/setskill me thieving 24         yourself, xp reset to 0
+/setskill 12 thieving 24         by server id
+/setskill ABC12345 fishing 5     by citizenid, online or not
+/setskill 12 thieving 24 300     level 24 with 300 xp banked toward 25
+/setskill 12 thieving            what they are on now, changing nothing
+```
+
+It exists because testing anything gated on a level otherwise means grinding to
+it or editing `player_skills` by hand — and the database is not reachable from
+every box that needs to do it.
+
+- **The read form changes nothing**, which is what stops the guess-and-set
+  habit: ask first, then set.
+- The level and any xp go through the same `normalise` every other write does,
+  so a level above the skill's `maxLevel`, or xp past what the level needs, is
+  clamped rather than stored.
+- **The target is told** (`NotifyTarget`) — a level moving on its own is
+  otherwise indistinguishable from a bug — and every use is printed to the
+  server console with who ran it and what it was before (`Log`).
+- The console counts as admin, because it is already the server. `me` does not
+  work from there, for the obvious reason.
+
+**It is on right now** for testing jgrp-petty-crime's house robbery ladder,
+which gates its tiers at thieving 15/18/21/24. Turn it off when that is done: a
+live server with a working "give me any level" command is one mis-set ace away
+from a problem.
+
 ## Telling you when you earn
 
 Every XP award notifies the player — `+14 Thieving xp` — because the framework
@@ -344,6 +378,66 @@ a framework that builds its own title/icon/duration doesn't have to parse `messa
 
 Set `Config.NotifyOnLevelUp = false` to suppress level-up notifications entirely without
 touching the function.
+
+## Skill decay
+
+A skill you stop using slides back. After `After` seconds without earning a
+point in it, it loses `Amount` XP, and another `Amount` for every `Every` after
+that — so a fortnight away costs two steps, not one.
+
+**It stops at nothing**: the floor is `Config.StartingLevel` with 0 XP.
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `Config.Decay.Enabled` | `false` | Off until you turn it on. It takes XP off people who earned it. |
+| `Config.Decay.After` | 1 week | Inactivity before the first step. |
+| `Config.Decay.Every` | 1 week | Between steps after that. |
+| `Config.Decay.Amount` | `250` | XP per step. |
+| `Config.Decay.Skills` | `{}` | Per-skill overrides of `Amount`. |
+| `Config.Decay.AllowDeLevel` | `true` | `false` keeps every level and only takes progress into the next. |
+| `Config.Decay.MaxSteps` | `4` | Cap per absence. `0` is uncapped. |
+| `Config.Decay.Notify` | `true` | Tell them what it cost. |
+
+From level 20 with `Amount = 250`:
+
+| away | steps | xp lost | ends at |
+| --- | --- | --- | --- |
+| 3 days | 0 | 0 | level 20 |
+| 1 week | 1 | 250 | level 19 + 1,200 |
+| 2 weeks | 2 | 500 | level 19 + 950 |
+| 1 month | 4 | 1,000 | level 19 + 450 |
+| 1 year | 4 (capped) | 1,000 | level 19 + 450 |
+
+**`MaxSteps` is worth keeping.** Uncapped, somebody back after six months
+loses everything the instant they log in.
+
+### When it runs
+
+**On load, not on a timer.** That is the moment it means something — you came
+back, here is what the time off cost — and nothing is spent on characters who
+are not playing. The consequence: somebody who stays connected for a fortnight
+without touching a skill does not decay until they next reconnect.
+
+Only `AddXP` resets the clock. `RemoveXP` and `SetSkill` deliberately do not,
+so an admin correction or a penalty is not mistaken for activity.
+
+### The migration, and the trap in it
+
+Decay needs `player_skills`.`last_xp` — unix seconds of the last gain.
+`ensureSchema()` adds it on resource start, and `sql/migration-20260921-decay.sql`
+does the same thing by hand for the panel.
+
+**The backfill is the whole point.** Every existing row predates the column;
+left NULL and read as "never", every character on the server would look
+untouched since 1970 and would decay to the floor the first time they logged
+in. Both paths stamp existing rows with the moment they run, and the runtime
+reads a NULL as *now* rather than the epoch — belt and braces, because getting
+this wrong wipes the server's progress in one go.
+
+The migration is safe to run twice: the column add is guarded on
+`information_schema`, since `ADD COLUMN IF NOT EXISTS` is MariaDB-only and
+throws on MySQL 8. It ends with a check query — **`rows_still_null` must be 0**
+before you turn decay on.
 
 ## Persistence
 

@@ -337,3 +337,33 @@ AddEventHandler('onClientResourceStop', function(resourceName)
     if resourceName ~= GetCurrentResourceName() then return end
     if uiOpen then SetNuiFocus(false, false) end
 end)
+
+-- ---------------------------------------------------------------------------
+-- Skill decay
+--
+-- Sent on load when time off has cost something. **Saying nothing would be the
+-- bug here** -- XP does not otherwise move between sessions, so a silent drop
+-- reads as lost progress rather than a rule working as designed.
+-- ---------------------------------------------------------------------------
+
+RegisterNetEvent('jgrp-skills:client:Decayed', function(list)
+    if type(list) ~= 'table' or #list == 0 then return end
+
+    for i = 1, #list do
+        local row = list[i]
+        local line = ('%s is rusty -- %d xp'):format(row.label or row.skill, row.xp or 0)
+
+        if (row.levels or 0) > 0 then
+            line = ('%s and %d level%s'):format(line, row.levels,
+                row.levels == 1 and '' or 's')
+        end
+
+        Notify(line, 'error', {
+            event = 'decay',
+            skill = row.skill,
+            label = row.label,
+            xp = row.xp,
+            levels = row.levels,
+        })
+    end
+end)

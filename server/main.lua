@@ -21,6 +21,39 @@ local function ensureSchema()
             PRIMARY KEY (`citizenid`, `skill`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ]])
+
+    -- `last_xp` -- unix seconds of the last time this skill earned anything.
+    -- Added for Config.Decay.
+    --
+    -- Checked through information_schema rather than
+    -- `ADD COLUMN IF NOT EXISTS`, which is MariaDB-only and would throw on
+    -- MySQL 8.
+    local existing = MySQL.scalar.await([[
+        SELECT COUNT(*) FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'player_skills'
+          AND COLUMN_NAME = 'last_xp'
+    ]])
+
+    if (tonumber(existing) or 0) > 0 then return end
+
+    MySQL.query.await('ALTER TABLE `player_skills` ADD COLUMN `last_xp` INT NULL')
+
+    -- **Backfill to now, and this is the important line.**
+    --
+    -- Every row that already exists predates the column. Left NULL and read as
+    -- "never", every character on the server would look like they had not
+    -- touched a skill since 1970 and would be decayed to nothing the first
+    -- time they logged in after this shipped. Stamping them with the deploy
+    -- time starts everybody's clock fresh, which is the only fair reading of
+    -- "we did not used to track this".
+    --
+    -- The runtime is belt and braces on top: a nil `last` is treated as now,
+    -- never as the epoch.
+    MySQL.query.await('UPDATE `player_skills` SET `last_xp` = ? WHERE `last_xp` IS NULL',
+        { os.time() })
+
+    print('^2[jgrp-skills]^7 added player_skills.last_xp and stamped existing rows with now')
 end
 
 --- [citizenid] = { [skillName] = { level = number, xp = number } }
@@ -50,7 +83,7 @@ end
 
 --- A fresh, unsaved entry for a skill the player has never trained.
 local function defaultEntry()
-    return { level = Config.StartingLevel, xp = 0 }
+    return { level = Config.StartingLevel, xp = 0, last = os.time() }
 end
 
 --- Clamp a stored row against the current config, so lowering a skill's
@@ -82,14 +115,20 @@ end
 
 local function loadFromDb(citizenid)
     local rows = MySQL.query.await(
-        'SELECT `skill`, `level`, `xp` FROM `player_skills` WHERE `citizenid` = ?',
+        'SELECT `skill`, `level`, `xp`, `last_xp` FROM `player_skills` WHERE `citizenid` = ?',
         { citizenid }
     )
 
     local data = {}
     for _, row in ipairs(rows or {}) do
         local entry = normalise(row.skill, row)
-        if entry then data[row.skill] = entry end
+
+        if entry then
+            -- **nil is read as now, never as the epoch.** A row written before
+            -- the column existed must not look like a decade of inactivity.
+            entry.last = tonumber(row.last_xp) or os.time()
+            data[row.skill] = entry
+        end
     end
 
     return data
@@ -97,9 +136,11 @@ end
 
 local function persist(citizenid, skillName, entry)
     MySQL.prepare(
-        'INSERT INTO `player_skills` (`citizenid`, `skill`, `level`, `xp`) VALUES (?, ?, ?, ?) ' ..
-        'ON DUPLICATE KEY UPDATE `level` = VALUES(`level`), `xp` = VALUES(`xp`)',
-        { citizenid, skillName, entry.level, entry.xp }
+        'INSERT INTO `player_skills` (`citizenid`, `skill`, `level`, `xp`, `last_xp`) ' ..
+        'VALUES (?, ?, ?, ?, ?) ' ..
+        'ON DUPLICATE KEY UPDATE `level` = VALUES(`level`), `xp` = VALUES(`xp`), ' ..
+        '`last_xp` = VALUES(`last_xp`)',
+        { citizenid, skillName, entry.level, entry.xp, entry.last or os.time() }
     )
 end
 
@@ -229,6 +270,102 @@ local function boostFor(skillName)
 end
 
 -- ---------------------------------------------------------------------------
+-- Decay
+--
+-- Worked in **total XP** rather than by walking levels down one at a time.
+-- Converting to a single number, subtracting, and converting back cannot drift
+-- or loop badly; the level-walking version of this is where off-by-ones live.
+-- ---------------------------------------------------------------------------
+
+--- Everything this entry has ever banked, as one number.
+local function toTotalXp(skillName, level, xp)
+    local total = xp
+
+    for l = Config.StartingLevel, level - 1 do
+        total = total + (Config.XPForLevel(skillName, l) or 0)
+    end
+
+    return total
+end
+
+--- And back again.
+local function fromTotalXp(skillName, total)
+    local level = Config.StartingLevel
+
+    while true do
+        local required = Config.XPForLevel(skillName, level)
+        if not required or total < required then break end
+
+        total = total - required
+        level = level + 1
+    end
+
+    return level, total
+end
+
+--- How many decay steps an absence is worth, and how much time they consume.
+--- @return number steps, number consumed seconds
+local function decaySteps(idle)
+    local cfg = Config.Decay
+    local after = cfg.After or 0
+
+    if idle < after then return 0, 0 end
+
+    local every = cfg.Every or after
+    local steps = 1
+
+    if every > 0 then
+        steps = steps + math.floor((idle - after) / every)
+    end
+
+    local capped = steps
+    if (cfg.MaxSteps or 0) > 0 then capped = math.min(steps, cfg.MaxSteps) end
+
+    -- Time consumed is counted on the UNCAPPED steps, so the clock does not
+    -- keep a huge backlog of decay owed after a capped absence.
+    return capped, after + ((steps - 1) * every)
+end
+
+--- Apply decay to one entry in place.
+--- @return number xp lost, number levels lost
+local function decayEntry(skillName, entry, now)
+    local cfg = Config.Decay
+    if not (cfg and cfg.Enabled) then return 0, 0 end
+
+    local last = tonumber(entry.last) or now
+    local steps, consumed = decaySteps(now - last)
+
+    if steps < 1 then return 0, 0 end
+
+    local amount = tonumber(cfg.Skills and cfg.Skills[skillName]) or tonumber(cfg.Amount) or 0
+    if amount < 1 then
+        entry.last = last + consumed
+        return 0, 0
+    end
+
+    local beforeLevel = entry.level
+    local before = toTotalXp(skillName, entry.level, entry.xp)
+
+    -- **The floor.** Never below the level a character starts at with 0 XP.
+    local after = math.max(0, before - (amount * steps))
+
+    local level, xp = fromTotalXp(skillName, after)
+
+    if not cfg.AllowDeLevel and level < beforeLevel then
+        -- Keep the level, lose only the progress into it.
+        level, xp = beforeLevel, 0
+    end
+
+    entry.level, entry.xp = level, xp
+
+    -- Advance the clock by what the absence consumed, not to `now`: a partial
+    -- week left over still counts towards the next step.
+    entry.last = last + consumed
+
+    return before - toTotalXp(skillName, entry.level, entry.xp), beforeLevel - entry.level
+end
+
+-- ---------------------------------------------------------------------------
 -- Core API
 -- ---------------------------------------------------------------------------
 
@@ -302,6 +439,11 @@ local function AddXP(target, skillName, amount)
     -- actually banked rather than what was asked for.
     local multiplier, boostLabel = boostFor(skillName)
     value = Config.ApplyBoost(value, multiplier)
+
+    -- Earning anything resets this skill's decay clock. Only AddXP does --
+    -- RemoveXP and SetSkill deliberately do not, so an admin correction or a
+    -- penalty is not mistaken for activity.
+    entry.last = os.time()
 
     local levelsGained = 0
     entry.xp = entry.xp + value
@@ -433,8 +575,39 @@ local function loadPlayer(src)
     -- level with no XP, rather than waiting for something to grant XP first.
     ensureSkills(citizenid, data)
 
+    -- **Decay is applied here**, on the way in. That is the moment it means
+    -- something -- you came back, here is what the time off cost -- and it
+    -- means nothing is spent on characters who are not playing.
+    local decayed = {}
+
+    if Config.Decay and Config.Decay.Enabled then
+        local now = os.time()
+
+        for skillName, entry in pairs(data) do
+            local lost, levels = decayEntry(skillName, entry, now)
+
+            if lost > 0 then
+                persist(citizenid, skillName, entry)
+
+                decayed[#decayed + 1] = {
+                    skill = skillName,
+                    label = (Config.Skills[skillName] or {}).label or skillName,
+                    xp = lost,
+                    levels = levels,
+                }
+            end
+        end
+    end
+
     cache[citizenid] = data
     TriggerClientEvent('jgrp-skills:client:SetSkills', src, GetSkills(citizenid))
+
+    -- Said after the skills are sent, so the client has the new numbers to
+    -- hand when it explains them. Silence here would read as a bug: XP does
+    -- not otherwise vanish between sessions.
+    if #decayed > 0 and Config.Decay.Notify then
+        TriggerClientEvent('jgrp-skills:client:Decayed', src, decayed)
+    end
 end
 
 RegisterNetEvent('QBCore:Server:PlayerLoaded', function(Player)
@@ -710,6 +883,128 @@ CreateThread(function()
     TriggerClientEvent('chat:addSuggestion', -1, '/xpboost',
         ('Current XP boosts, or set one for %d min (admin)')
             :format(tonumber(Config.Boost.DefaultMinutes) or 60))
+end)
+
+-- ---------------------------------------------------------------------------
+-- /setskill
+--
+--   /setskill me thieving 24         yourself, xp reset to 0
+--   /setskill 12 thieving 24         by server id
+--   /setskill ABC12345 fishing 5     by citizenid, online or not
+--   /setskill 12 thieving 24 300     level 24 with 300 xp banked toward 25
+--   /setskill 12 thieving            what they are on now, changing nothing
+--
+-- Admin only -- see Config.SetSkill -- and the whole command disappears when
+-- `Config.SetSkill.Command` is false.
+-- ---------------------------------------------------------------------------
+
+CreateThread(function()
+    local cfg = Config.SetSkill
+    if not (cfg and cfg.Command) then return end
+
+    RegisterCommand('setskill', function(source, args)
+        local src = source
+
+        local function reply(message)
+            if src == 0 then
+                print(('[jgrp-skills] %s'):format(message))
+            else
+                TriggerClientEvent('QBCore:Notify', src, message, 'primary')
+            end
+        end
+
+        -- The console (src 0) is always allowed: it is already the server, and
+        -- gating it would only make the command unusable from txAdmin, which
+        -- is where an admin without a character is standing.
+        if src ~= 0
+            and not QBCore.Functions.HasPermission(src, cfg.CommandPermission or 'admin') then
+            return reply('You cannot set that.')
+        end
+
+        if not args[1] or not args[2] then
+            return reply('Usage: /setskill <id|citizenid|me> <skill> [level] [xp] '
+                .. '-- leave the level off to read it.')
+        end
+
+        --- `me` is the common case and the one worth a shortcut, but it needs
+        --- somebody to be `me`: from the console there is nobody.
+        local target = args[1]
+
+        if target == 'me' then
+            if src == 0 then return reply('"me" means nothing from the console.') end
+            target = src
+        else
+            -- A number is a server id; anything else is a citizenid, which is
+            -- how an offline character is reached.
+            target = tonumber(target) or target
+        end
+
+        local skillName = args[2]
+
+        if not Config.Skills[skillName] then
+            local names = {}
+            for name in pairs(Config.Skills) do names[#names + 1] = name end
+            table.sort(names)
+
+            return reply(('There is no "%s" skill. Try: %s')
+                :format(skillName, table.concat(names, ', ')))
+        end
+
+        local before = GetSkill(target, skillName)
+        if not before then return reply('No such player.') end
+
+        -- No level given: read it out and change nothing. The same command
+        -- answering "what are they on?" is what stops the guess-and-set habit.
+        if args[3] == nil then
+            return reply(('%s is on %s level %d (%d xp).')
+                :format(tostring(args[1]), skillName, before.level, before.xp))
+        end
+
+        local level = tonumber(args[3])
+        if not level or level < 0 then
+            return reply('The level has to be a number, 0 or above.')
+        end
+
+        -- `xp` is optional and means xp *within* the new level. SetSkill puts
+        -- both through `normalise`, so a level above the skill's maxLevel or
+        -- an xp past the level's requirement is clamped rather than stored.
+        local xp = tonumber(args[4]) or 0
+
+        local after = SetSkill(target, skillName, level, xp)
+
+        if not after then return reply('Could not set that -- no such player.') end
+
+        reply(('%s: %s %d -> %d (%d xp).')
+            :format(tostring(args[1]), skillName, before.level, after.level, after.xp))
+
+        --- Tell them it happened. A level moving on its own is otherwise
+        --- indistinguishable from a bug.
+        if cfg.NotifyTarget then
+            local _, Player = resolveTarget(target)
+            local theirSrc = Player and Player.PlayerData.source
+
+            if theirSrc and theirSrc ~= src then
+                TriggerClientEvent('QBCore:Notify', theirSrc,
+                    ('An admin set your %s to level %d.')
+                        :format(Config.Skills[skillName].label or skillName, after.level),
+                    'primary')
+            end
+        end
+
+        if cfg.Log then
+            print(('^5[jgrp-skills]^7 %s set %s %s: %d -> %d (%d xp)')
+                :format(src == 0 and 'console' or (GetPlayerName(src) or src),
+                    tostring(args[1]), skillName, before.level, after.level, after.xp))
+        end
+    end, false)
+
+    TriggerClientEvent('chat:addSuggestion', -1, '/setskill',
+        'Set a character\'s level in a skill (admin)', {
+            { name = 'target', help = 'server id, citizenid, or me' },
+            { name = 'skill', help = 'thieving, fishing, ...' },
+            { name = 'level', help = 'the level to set -- omit to read it' },
+            { name = 'xp', help = 'optional xp within that level' },
+        })
 end)
 
 -- ---------------------------------------------------------------------------

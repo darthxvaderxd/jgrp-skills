@@ -151,6 +151,102 @@ Config.Boost = {
     --- `Enabled = false`, or the resource not running, is.
 }
 
+-- ---------------------------------------------------------------------------
+-- /setskill
+--
+-- Set a character's level in a skill outright. **This hands out progression**,
+-- so it is an admin command and it is one you should be able to turn off
+-- without editing code -- which is what `Command` below is for.
+--
+-- It exists because testing anything gated on a level otherwise means either
+-- grinding to it or editing `player_skills` by hand in the database, and the
+-- database is not reachable from every box that needs to do it.
+-- ---------------------------------------------------------------------------
+
+Config.SetSkill = {
+    --- Register `/setskill`. **On** -- turned on 2026-09-22 for testing the
+    --- house robbery ladder in jgrp-petty-crime, which gates tiers at
+    --- thieving 15/18/21/24. Turn it off again when that is done: a live
+    --- server with a working "give me any level" command is one mis-set ace
+    --- away from a problem.
+    Command = true,
+
+    --- The ace permission required. Same default as the boost command, and
+    --- the server console always counts because it is already the server.
+    CommandPermission = 'admin',
+
+    --- Tell the target their skill was changed. On, because a level moving on
+    --- its own is otherwise indistinguishable from a bug -- and because
+    --- somebody should know it happened to them.
+    NotifyTarget = true,
+
+    --- Print every use to the server console: who ran it, on whom, and what
+    --- it was before. An admin command that grants progression should leave a
+    --- trace even on a server with no admin logging of its own.
+    Log = true,
+}
+
+-- ---------------------------------------------------------------------------
+-- Skill decay
+--
+-- A skill you stop using slides back. After `After` seconds without earning a
+-- single point in it, it loses `Amount` XP, and another `Amount` for every
+-- `Every` after that -- so coming back from a fortnight away costs two steps,
+-- not one.
+--
+-- **It stops at nothing.** The floor is `Config.StartingLevel` with 0 XP; it
+-- never goes negative and never below the level a character starts at.
+--
+-- **Decay is applied when a character loads in**, not on a timer. That is the
+-- moment it matters -- you came back, here is what it cost -- and it means the
+-- server does no work for people who are not playing. The consequence worth
+-- knowing: somebody who stays connected for a fortnight without touching a
+-- skill does not decay until they next reconnect.
+-- ---------------------------------------------------------------------------
+
+Config.Decay = {
+    --- **Off by default.** Turning this on takes XP away from people who have
+    --- already earned it, which is not a thing to switch on by accident on a
+    --- live server. Read the rest of this block first, then set it true.
+    Enabled = false,
+
+    --- Seconds of not earning a point in a skill before the first step.
+    --- A week.
+    After = 7 * 24 * 60 * 60,
+
+    --- Seconds between each step after the first. Also a week, so a month away
+    --- is roughly four steps.
+    Every = 7 * 24 * 60 * 60,
+
+    --- XP lost per step.
+    Amount = 250,
+
+    --- Per-skill overrides of `Amount`. A skill nobody is expected to use
+    --- weekly wants a gentler number than one they live in.
+    ---
+    ---     Skills = { fishing = 100, thieving = 400 },
+    Skills = {},
+
+    --- Let a step drop levels, or stop at 0 XP in the current one.
+    ---
+    --- `true` means a long absence really does cost levels, down to
+    --- Config.StartingLevel. `false` means you keep every level you reached
+    --- and only ever lose progress towards the next -- much gentler, and the
+    --- one to pick if decay is meant as a nudge rather than a punishment.
+    AllowDeLevel = true,
+
+    --- Cap how many steps one absence can apply. 0 is uncapped.
+    ---
+    --- **Worth setting.** Uncapped, somebody returning after six months loses
+    --- everything in one go the instant they log in. 4 means an absence costs
+    --- at most a month's worth however long it really was.
+    MaxSteps = 20,
+
+    --- Tell the player what they lost when they load in. Off makes it silent,
+    --- which is worse: XP vanishing with no explanation reads as a bug.
+    Notify = true,
+}
+
 --- The default XP curve. Declared before Config.Skills because the table below
 --- reads it by value -- a `function baseXpPerLevel` further down the file would
 --- still be nil at the point the table is built.
