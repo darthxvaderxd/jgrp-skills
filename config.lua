@@ -286,6 +286,33 @@ Config.Skills = {
         maxLevel = BASE_MAX_LEVEL,
         xpPerLevel = baseXpPerLevel,
     },
+    -- jgrp-smelting's ore gathering/smelting/gem-cutting gate on top of
+    -- jim-mining, added 2026-09-25. Named "foundary" (not "smelting") per
+    -- the user's own call, renamed the same day before this ever went live
+    -- to a player.
+    foundary = {
+        label = 'Foundary',
+        maxLevel = BASE_MAX_LEVEL,
+        xpPerLevel = baseXpPerLevel,
+    },
+    -- sofy-garbage's routes, added 2026-09-24.
+    sanitation = {
+        label = 'Sanitation',
+        maxLevel = BASE_MAX_LEVEL,
+        xpPerLevel = baseXpPerLevel,
+    },
+    -- jgrp-taxi's fares, added 2026-09-27.
+    taxi = {
+        label = 'Taxi',
+        maxLevel = BASE_MAX_LEVEL,
+        xpPerLevel = baseXpPerLevel,
+    },
+    -- jgrp-towing's routes, added 2026-09-27.
+    towing = {
+        label = 'Towing',
+        maxLevel = BASE_MAX_LEVEL,
+        xpPerLevel = baseXpPerLevel,
+    },
 }
 
 --- XP required to advance from `level` to `level + 1` for a skill.

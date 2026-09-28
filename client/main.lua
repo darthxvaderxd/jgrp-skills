@@ -125,7 +125,7 @@ AddEventHandler('onClientResourceStart', function(resourceName)
     -- not be listening yet and the suggestion is silently dropped.
     TriggerEvent('chat:addSuggestion', '/skill_debug',
         'List your level and XP for every skill')
-    TriggerEvent('chat:addSuggestion','/skill',
+    TriggerEvent('chat:addSuggestion','/skills',
         'List your level and XP for every skill')
 end)
 
@@ -317,11 +317,11 @@ local function closeSkillUI()
     SendNUIMessage({ action = 'close' })
 end
 
-RegisterCommand('skill', function()
+RegisterCommand('skills', function()
     if uiOpen then closeSkillUI() else openSkillUI() end
 end, false)
 
-RegisterKeyMapping('skill', 'Open the skills menu', 'keyboard', '')
+RegisterKeyMapping('skills', 'Open the skills menu', 'keyboard', '')
 
 RegisterNUICallback('jgrp-skills:close', function(_, cb)
     closeSkillUI()
