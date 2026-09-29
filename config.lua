@@ -313,6 +313,12 @@ Config.Skills = {
         maxLevel = BASE_MAX_LEVEL,
         xpPerLevel = baseXpPerLevel,
     },
+    -- jgrp-trucking's routes, added 2026-09-28.
+    trucking = {
+        label = 'Trucking',
+        maxLevel = BASE_MAX_LEVEL,
+        xpPerLevel = baseXpPerLevel,
+    },
 }
 
 --- XP required to advance from `level` to `level + 1` for a skill.
