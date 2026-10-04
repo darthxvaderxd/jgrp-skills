@@ -301,6 +301,13 @@ Config.Skills = {
         maxLevel = BASE_MAX_LEVEL,
         xpPerLevel = baseXpPerLevel,
     },
+    -- jgrp-scavenging's trash cans (0-20), dumpsters (20-50) and scrap vehicles
+    -- (50-100), added 2026-10-01. Replaces sofy-recycle's dumpster diving.
+    scavenging = {
+        label = 'Scavenging',
+        maxLevel = BASE_MAX_LEVEL,
+        xpPerLevel = baseXpPerLevel,
+    },
     -- jgrp-taxi's fares, added 2026-09-27.
     taxi = {
         label = 'Taxi',
