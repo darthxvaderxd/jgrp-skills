@@ -1,6 +1,50 @@
 local QBCore = exports['qb-core']:GetCoreObject()
 
 -- ---------------------------------------------------------------------------
+-- Logging (jgrp-logging, if it is running: an event nobody handles is a no-op)
+--
+-- Awards themselves are NOT logged -- every job pays XP constantly and a line per
+-- award would bury the channel. What is logged is what someone would ask about:
+-- level-ups, one award big enough to look wrong, an admin changing a character,
+-- XP boosts, and what a long absence cost on login.
+-- ---------------------------------------------------------------------------
+
+--- Config.Logging (all optional): Enabled (default on), BigXp (a single award at or above this is flagged; default 1000, 0 = never).
+local function logging()
+    local cfg = Config.Logging or {}
+    if cfg.Enabled == false then return nil end
+    return cfg
+end
+
+--- True while a command is making a change it will log itself, with the admin named.
+local commandOwnsLog = false
+
+local function skillLabel(skillName)
+    return (Config.Skills[skillName] or {}).label or skillName
+end
+
+--- Log about a character. Online: attributed to the player. Offline: by citizenid.
+local function logCharacter(citizenid, Player, activity, message, data, overrides)
+    if not logging() then return end
+
+    data = data or {}
+    data.citizenid = citizenid
+
+    local src = Player and Player.PlayerData.source
+    if src then
+        TriggerEvent('jgrp-logging:server:logPlayer', src, activity, message, data, overrides)
+    else
+        TriggerEvent('jgrp-logging:server:log', activity, message, data, overrides)
+    end
+end
+
+local function characterName(citizenid, Player)
+    local ci = Player and Player.PlayerData.charinfo
+    if ci then return ('%s %s'):format(ci.firstname or '?', ci.lastname or '') end
+    return citizenid
+end
+
+-- ---------------------------------------------------------------------------
 -- Schema
 -- ---------------------------------------------------------------------------
 
@@ -208,6 +252,12 @@ local function commit(citizenid, Player, skillName, entry, levelsGained, gained,
     end
 
     if levelsGained and levelsGained > 0 then
+        if gained then
+            logCharacter(citizenid, Player, 'skills.levelup',
+                ('%s reached %s level %d'):format(characterName(citizenid, Player), skillLabel(skillName), entry.level),
+                { skill = skillName, level = entry.level, levelsGained = levelsGained })
+        end
+
         TriggerEvent('jgrp-skills:server:LevelUp', citizenid, skillName, entry.level, levelsGained)
         if src then
             TriggerClientEvent('jgrp-skills:client:LevelUp', src, skillName, entry.level, levelsGained)
@@ -466,6 +516,15 @@ local function AddXP(target, skillName, amount)
     commit(citizenid, Player, skillName, entry, levelsGained, value,
         multiplier ~= 1.0 and { multiplier = multiplier, label = boostLabel } or nil)
 
+    local cfg = logging()
+    local bigXp = cfg and (tonumber(cfg.BigXp) or 1000) or 0
+    if bigXp > 0 and value >= bigXp then
+        logCharacter(citizenid, Player, 'skills.bigxp',
+            ('%s was awarded %d %s xp in one go'):format(characterName(citizenid, Player), value, skillLabel(skillName)),
+            { skill = skillName, xp = value, boost = multiplier, level = entry.level, awardedBy = GetInvokingResource() },
+            { level = 'warn' })
+    end
+
     local result = GetSkill(citizenid, skillName)
     if result then
         result.levelsGained = levelsGained
@@ -497,6 +556,13 @@ local function RemoveXP(target, skillName, amount)
 
     commit(citizenid, Player, skillName, entry, 0)
 
+    if not commandOwnsLog then
+        logCharacter(citizenid, Player, 'skills.admin.removexp',
+            ('%s lost %d %s xp'):format(characterName(citizenid, Player), value, skillLabel(skillName)),
+            { skill = skillName, removed = value, level = entry.level, levelsLost = levelsLost, by = GetInvokingResource() or 'server' },
+            { level = 'warn' })
+    end
+
     local result = GetSkill(citizenid, skillName)
     if result then result.levelsLost = levelsLost end
     return result
@@ -516,7 +582,15 @@ local function SetSkill(target, skillName, level, xp)
     if not entry then return nil end
 
     local previous = getEntry(getSkills(citizenid), skillName)
+    local previousLevel, previousXp = previous.level, previous.xp
     commit(citizenid, Player, skillName, entry, math.max(0, entry.level - previous.level))
+
+    if not commandOwnsLog then
+        logCharacter(citizenid, Player, 'skills.admin.set',
+            ('%s %s set: level %d -> %d'):format(characterName(citizenid, Player), skillLabel(skillName), previousLevel, entry.level),
+            { skill = skillName, from = { level = previousLevel, xp = previousXp }, to = { level = entry.level, xp = entry.xp }, by = GetInvokingResource() or 'server' },
+            { level = 'warn' })
+    end
 
     return GetSkill(citizenid, skillName)
 end
@@ -556,6 +630,11 @@ local function ResetSkill(target, skillName)
     if src then
         TriggerClientEvent('jgrp-skills:client:SetSkills', src, GetSkills(citizenid))
     end
+
+    logCharacter(citizenid, Player, 'skills.admin.reset',
+        ('%s had %s reset'):format(characterName(citizenid, Player), skillName and skillLabel(skillName) or 'every skill'),
+        { skill = skillName or 'all', by = GetInvokingResource() or 'server' },
+        { level = 'warn' })
 
     return true
 end
@@ -607,6 +686,15 @@ local function loadPlayer(src)
     -- not otherwise vanish between sessions.
     if #decayed > 0 and Config.Decay.Notify then
         TriggerClientEvent('jgrp-skills:client:Decayed', src, decayed)
+    end
+
+    if #decayed > 0 then
+        local levels, xp = 0, 0
+        for _, d in ipairs(decayed) do levels = levels + (d.levels or 0) xp = xp + (d.xp or 0) end
+
+        logCharacter(citizenid, Player, 'skills.decay',
+            ('%s lost %d xp (%d levels) to inactivity across %d skills'):format(characterName(citizenid, Player), xp, levels, #decayed),
+            { skills = decayed })
     end
 end
 
@@ -712,6 +800,10 @@ exports('SetBoost', function(multiplier, minutes, skillName, label)
 
     if not multiplier or multiplier <= 0 then
         manualBoost = nil
+        if logging() then
+            TriggerEvent('jgrp-logging:server:log', 'skills.admin.xpboost', 'The manual XP boost was cleared',
+                { by = GetInvokingResource() or 'server' }, { level = 'warn' })
+        end
         return true
     end
 
@@ -723,6 +815,13 @@ exports('SetBoost', function(multiplier, minutes, skillName, label)
         label = label or 'Admin boost',
         expires = tonumber(minutes) and (os.time() + (tonumber(minutes) * 60)) or nil,
     }
+
+    if logging() then
+        TriggerEvent('jgrp-logging:server:log', 'skills.admin.xpboost',
+            ('A %sx XP boost was set%s'):format(rateText(multiplier), skillName and (' on ' .. skillName) or ''),
+            { multiplier = multiplier, skill = skillName, minutes = tonumber(minutes), label = manualBoost.label, by = GetInvokingResource() or 'server' },
+            { level = 'warn' })
+    end
 
     return true
 end)
@@ -751,6 +850,12 @@ CreateThread(function()
 
         for entry in pairs(open) do
             if not announced[entry] then
+                if logging() then
+                    TriggerEvent('jgrp-logging:server:log', 'skills.boost.window',
+                        ('Scheduled XP boost "%s" opened (%sx)'):format(entry.label or 'XP boost', rateText(tonumber(entry.multiplier) or 1.0)),
+                        { label = entry.label, multiplier = tonumber(entry.multiplier) or 1.0, skills = entry.skills })
+                end
+
                 TriggerClientEvent('jgrp-skills:client:BoostNotice', -1, {
                     open = true,
                     label = entry.label or 'XP boost',
@@ -762,6 +867,11 @@ CreateThread(function()
 
         for entry in pairs(announced) do
             if not open[entry] then
+                if logging() then
+                    TriggerEvent('jgrp-logging:server:log', 'skills.boost.window',
+                        ('Scheduled XP boost "%s" closed'):format(entry.label or 'XP boost'), { label = entry.label })
+                end
+
                 TriggerClientEvent('jgrp-skills:client:BoostNotice', -1, {
                     open = false,
                     label = entry.label or 'XP boost',
@@ -827,6 +937,16 @@ CreateThread(function()
 
         if first == 'off' or first == 'clear' or first == 'none' then
             manualBoost = nil
+
+            if logging() then
+                if src ~= 0 then
+                    TriggerEvent('jgrp-logging:server:logPlayer', src, 'skills.admin.xpboost',
+                        ('%s cleared the manual XP boost'):format(GetPlayerName(src) or 'Unknown'), {}, { level = 'warn' })
+                else
+                    TriggerEvent('jgrp-logging:server:log', 'skills.admin.xpboost', 'The console cleared the manual XP boost', { by = 'console' }, { level = 'warn' })
+                end
+            end
+
             return reply('Manual XP boost cleared.')
         end
 
@@ -864,6 +984,18 @@ CreateThread(function()
             label = 'Admin boost',
             expires = minutes > 0 and (os.time() + (minutes * 60)) or nil,
         }
+
+        if logging() then
+            local text = ('%s set a %sx XP boost%s%s'):format(src == 0 and 'The console' or (GetPlayerName(src) or 'Unknown'),
+                rateText(multiplier), skillName and (' on ' .. skillName) or '', minutes > 0 and (' for ' .. minutes .. ' min') or ' until restart')
+            local data = { multiplier = multiplier, skill = skillName, minutes = minutes }
+            if src ~= 0 then
+                TriggerEvent('jgrp-logging:server:logPlayer', src, 'skills.admin.xpboost', text, data, { level = 'warn' })
+            else
+                data.by = 'console'
+                TriggerEvent('jgrp-logging:server:log', 'skills.admin.xpboost', text, data, { level = 'warn' })
+            end
+        end
 
         reply(('XP boost set: %sx%s%s'):format(
             rateText(multiplier),
@@ -970,9 +1102,25 @@ CreateThread(function()
         -- an xp past the level's requirement is clamped rather than stored.
         local xp = tonumber(args[4]) or 0
 
-        local after = SetSkill(target, skillName, level, xp)
+        commandOwnsLog = true
+        local ok, after = pcall(SetSkill, target, skillName, level, xp)
+        commandOwnsLog = false
+        if not ok then error(after, 0) end
 
         if not after then return reply('Could not set that -- no such player.') end
+
+        if logging() then
+            local _, TargetPlayer = resolveTarget(target)
+            local text = ('%s set %s %s: level %d -> %d'):format(src == 0 and 'The console' or (GetPlayerName(src) or 'Unknown'),
+                characterName(after.citizenid or tostring(args[1]), TargetPlayer), skillLabel(skillName), before.level, after.level)
+            local data = { skill = skillName, target = tostring(args[1]), from = { level = before.level, xp = before.xp }, to = { level = after.level, xp = after.xp } }
+            if src ~= 0 then
+                TriggerEvent('jgrp-logging:server:logPlayer', src, 'skills.admin.set', text, data, { level = 'warn' })
+            else
+                data.by = 'console'
+                TriggerEvent('jgrp-logging:server:log', 'skills.admin.set', text, data, { level = 'warn' })
+            end
+        end
 
         reply(('%s: %s %d -> %d (%d xp).')
             :format(tostring(args[1]), skillName, before.level, after.level, after.xp))

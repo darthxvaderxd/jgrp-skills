@@ -163,6 +163,16 @@ Config.Boost = {
 -- database is not reachable from every box that needs to do it.
 -- ---------------------------------------------------------------------------
 
+--- Discord logging through jgrp-logging (a no-op when that resource is not running).
+--- Logged: level-ups, one award big enough to look wrong, an admin changing a character
+--- (/setskill, SetSkill/ResetSkill/RemoveXP from another resource), XP boosts (/xpboost,
+--- SetBoost, scheduled windows opening and closing) and what a long absence cost on login.
+--- Not logged: ordinary awards -- every job pays XP constantly.
+Config.Logging = {
+    Enabled = true,
+    BigXp = 1000,   -- a single award at or above this (after any boost) is flagged as a warning; 0 = never
+}
+
 Config.SetSkill = {
     --- Register `/setskill`. **On** -- turned on 2026-09-22 for testing the
     --- house robbery ladder in jgrp-petty-crime, which gates tiers at
