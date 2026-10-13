@@ -286,6 +286,11 @@ Config.Skills = {
         maxLevel = BASE_MAX_LEVEL,
         xpPerLevel = baseXpPerLevel,
     },
+        delivery = {
+        label = 'Delivery',
+        maxLevel = BASE_MAX_LEVEL,
+        xpPerLevel = baseXpPerLevel,
+    },
     fishing = {
         label = 'Fishing',
         maxLevel = BASE_MAX_LEVEL,
