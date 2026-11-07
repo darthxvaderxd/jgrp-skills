@@ -113,7 +113,12 @@ Config.Boost = {
     ---
     ---     { days = { 'fri' }, from = '18:00', to = '02:00',
     ---       multiplier = 2.0, label = 'Friday Night Double XP' },
-    Schedule = {},
+    -- Halloween weekend 2026-10-31/11-01. Recurs every week until removed: DELETE THIS ENTRY
+    -- (and push) after Sunday night. Local time (UseUTC = false), so it closes 23:59 Sunday CDT.
+    Schedule = {
+        { days = { 'sat', 'sun' }, from = '00:00', to = '23:59',
+          multiplier = 2.0, label = 'Double XP Weekend' },
+    },
 
     --- How the always-on multiplier, an open schedule window and a manual
     --- `/xpboost` combine when more than one is in play.
